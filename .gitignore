@@ -11,3 +11,4 @@ pytest_cache/
 Thumbs.db
 labels/
 outputs/
+data/

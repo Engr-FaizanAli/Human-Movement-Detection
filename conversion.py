@@ -1,10 +1,11 @@
 ﻿#!/usr/bin/env python
-"""Convert COCO JSON or Pascal VOC XML annotations to YOLO format.
+r"""Convert COCO JSON or Pascal VOC XML annotations to YOLO format.
 
 Examples:
   python conversion.py --input "C:\Users\Administrator\Downloads" --type coco --output "C:\Users\Administrator\Downloads\labels"
   python conversion.py --input "C:\Users\Administrator\Downloads\XML" --type xml --output "C:\Users\Administrator\Downloads\labels"
 """
+
 
 from __future__ import annotations
 
