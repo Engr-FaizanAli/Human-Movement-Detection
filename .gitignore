@@ -12,3 +12,6 @@ Thumbs.db
 labels/
 outputs/
 data/
+filtered_data/
+logs/
+thermal_labels/

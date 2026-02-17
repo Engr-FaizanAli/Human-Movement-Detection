@@ -1,0 +1,19 @@
+============================================================
+Analyzing YOLO dataset at: filtered_data
+============================================================
+
+Folder Path                                        | Person (0) | Car (1)
+---------------------------------------------------------------------------
+hit_uav_filtered\labels                            | 8533       | 5253
+infrared\thermal_labels                            | 0          | 0
+infrared\thermal_labels\test                       | 8302       | 0
+infrared\thermal_labels\train                      | 34130      | 0
+thermal_train_labels                               | 50478      | 73623
+thermal_val_labels                                 | 4470       | 7133
+
+============================================================
+GRAND TOTALS
+============================================================
+Total Persons (Class 0): 105913
+Total Cars    (Class 1): 86009
+============================================================
