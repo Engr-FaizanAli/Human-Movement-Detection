@@ -15,3 +15,11 @@ data/
 filtered_data/
 logs/
 thermal_labels/
+processed_images/
+combined/
+processed_images/
+ragirtulenv/
+yolo_split/
+.idea/
+runs/
+*.pt
