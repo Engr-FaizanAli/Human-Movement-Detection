@@ -23,3 +23,5 @@ yolo_split/
 .idea/
 runs/
 *.pt
+yolo_split/
+

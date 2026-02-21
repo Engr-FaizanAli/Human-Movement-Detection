@@ -1,8 +1,29 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 """Train YOLOv8x with metrics logging, checkpoints, and early stopping.
 
-Example:
-  python scripts/train_yolov8.py --data "D:\Projects\Human Movement Detection\yolo_split\data.yaml" --epochs 100 --batch 16 --img 640 --project runs --name yolo8x_humans_cars
+Example (RunPod A40):
+  python scripts/train_yolov8.py \
+    --data /workspace/POD_OCR/yolo_split/data.yaml \
+    --epochs 200 \
+    --batch 64 \
+    --img 640 \
+    --project /workspace/POD_OCR/runs \
+    --name yolov8x_humans_v1 \
+    --patience 50 \
+    --save_period 10 \
+    --device 0 \
+    --seed 42 \
+    --workers 16 \
+    --lr0 0.01 \
+    --lrf 0.01 \
+    --cos-lr \
+    --warmup-epochs 5.0 \
+    --mosaic 1.0 \
+    --degrees 10.0 \
+    --translate 0.15 \
+    --scale 0.6 \
+    --shear 2.0 \
+    --fliplr 0.5
 """
 
 from __future__ import annotations
@@ -26,39 +47,43 @@ def _flatten_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="YOLOv8x training with CSV metrics and checkpoints")
     parser.add_argument("--data", required=True, type=Path, help="Path to data.yaml")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--img", type=int, default=640)
-    parser.add_argument("--project", type=Path, default=Path("runs"))
-    parser.add_argument("--name", type=str, default="yolov8x_humans_cars")
+    parser.add_argument("--project", type=Path, default=Path("/workspace/POD_OCR/runs"))
+    parser.add_argument("--name", type=str, default="yolov8x_humans_v1")
     parser.add_argument(
         "--ckpt-dir",
         type=Path,
         default=None,
         help="Optional directory to store checkpoint copies",
     )
-    parser.add_argument("--patience", type=int, default=20, help="Early stopping patience (epochs)")
-    parser.add_argument("--save_period", type=int, default=5, help="Checkpoint save period (epochs)")
+    parser.add_argument("--patience", type=int, default=50, help="Early stopping patience (epochs)")
+    parser.add_argument("--save_period", type=int, default=10, help="Checkpoint save period (epochs)")
     parser.add_argument("--device", type=str, default="0", help="CUDA device id or 'cpu'")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=16)
     # LR schedule
     parser.add_argument("--lr0", type=float, default=0.01, help="Initial learning rate")
-    parser.add_argument("--lrf", type=float, default=0.1, help="Final LR factor (lr0 * lrf)")
+    parser.add_argument("--lrf", type=float, default=0.01, help="Final LR factor (lr0 * lrf)")
     parser.add_argument("--cos-lr", action="store_true", help="Use cosine LR decay")
-    parser.add_argument("--warmup-epochs", type=float, default=3.0)
+    parser.add_argument("--warmup-epochs", type=float, default=5.0)
     parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume training from the last checkpoint in the run directory",
     )
     # Augmentation controls (YOLOv8)
-    parser.add_argument("--mosaic", type=float, default=0.5)
-    parser.add_argument("--degrees", type=float, default=5.0)
-    parser.add_argument("--translate", type=float, default=0.1)
-    parser.add_argument("--scale", type=float, default=0.5)
+    parser.add_argument("--mosaic", type=float, default=1.0)
+    parser.add_argument("--degrees", type=float, default=10.0)
+    parser.add_argument("--translate", type=float, default=0.15)
+    parser.add_argument("--scale", type=float, default=0.6)
     parser.add_argument("--shear", type=float, default=2.0)
     parser.add_argument("--fliplr", type=float, default=0.5)
+    # HSV augmentation (use YOLOv8 defaults; variable outdoor lighting benefits from these)
+    parser.add_argument("--hsv-h", type=float, default=0.015, help="HSV hue augmentation")
+    parser.add_argument("--hsv-s", type=float, default=0.7, help="HSV saturation augmentation")
+    parser.add_argument("--hsv-v", type=float, default=0.4, help="HSV value augmentation")
 
     args = parser.parse_args()
 
@@ -93,19 +118,21 @@ def main() -> int:
         writer.writerow(metrics)
         csv_file.flush()
 
-        # Copy checkpoint each epoch (resume-capable)
         epoch = int(trainer.epoch)
         weights_dir = Path(trainer.save_dir) / "weights"
-        last_pt = weights_dir / "last.pt"
-        if last_pt.exists():
-            dest = ckpt_dir / f"epoch_{epoch + 1:03d}.pt"
-            dest.write_bytes(last_pt.read_bytes())
+
+        # Only copy checkpoints on save_period boundaries to avoid filling disk
+        # (YOLOv8x weights are ~136 MB each; every-epoch copies waste ~27 GB over 200 epochs)
         if args.save_period and args.save_period > 0 and (epoch + 1) % args.save_period == 0:
+            last_pt = weights_dir / "last.pt"
+            if last_pt.exists():
+                dest = ckpt_dir / f"epoch_{epoch + 1:03d}.pt"
+                dest.write_bytes(last_pt.read_bytes())
+
+            # Always overwrite best.pt so it reflects the true best weights, not just the first save
             best_pt = weights_dir / "best.pt"
             if best_pt.exists():
-                best_dest = ckpt_dir / "best.pt"
-                if not best_dest.exists():
-                    best_dest.write_bytes(best_pt.read_bytes())
+                (ckpt_dir / "best.pt").write_bytes(best_pt.read_bytes())
 
     model = YOLO("yolov8x.pt")
 
@@ -134,10 +161,9 @@ def main() -> int:
         scale=args.scale,
         shear=args.shear,
         fliplr=args.fliplr,
-        # disable other augmentations
-        hsv_h=0.0,
-        hsv_s=0.0,
-        hsv_v=0.0,
+        hsv_h=args.hsv_h,
+        hsv_s=args.hsv_s,
+        hsv_v=args.hsv_v,
         flipud=0.0,
         mixup=0.0,
         copy_paste=0.0,
