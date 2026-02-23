@@ -24,4 +24,6 @@ yolo_split/
 runs/
 *.pt
 yolo_split/
-
+use_case/
+test_cases/
+*.mp4

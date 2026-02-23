@@ -1,0 +1,303 @@
+Motion Detection Pipeline — Development Notes
+=============================================
+Project: Human-Movement-Detection (TI)
+Status:  v1 implemented, camera motion compensation identified as next step
+Updated: 2026-02-24
+
+
+================================================================================
+CONTEXT & MOTIVATION
+================================================================================
+
+The YOLO pipeline works well on close-range targets, but at 2-3 km:
+  - Human footprint shrinks to 2-8 pixels
+  - Thermal contrast drops significantly
+  - Appearance-based detection loses reliability
+
+The solution: a MOTION-FIRST pipeline.
+  Stage 1  →  Detect any moving blob (class-agnostic) — THIS FILE
+  Stage 2  →  YOLO classification on motion ROIs (future)
+  Stage 3  →  ByteTrack/DeepSORT tracking (future, already exists in video_inference.py)
+
+This document covers Stage 1 only. Stage 1 is intentionally isolated from YOLO
+so it can be tested and tuned on both easy (close-range) and difficult (2-3km)
+videos independently.
+
+
+================================================================================
+WHAT WAS BUILT — v1
+================================================================================
+
+Two new scripts in scripts/:
+
+  ti_motion_detect.py   — CLI motion detection pipeline (800+ lines)
+  ti_motion_tune.py     — Streamlit interactive tuning app
+
+
+--- ti_motion_detect.py ---------------------------------------------------------
+
+Architecture: 4 classes + main()
+
+  TIPreprocessor       CLAHE + IIR temporal smoothing
+  MotionDetector       MOG2 / KNN / Frame-Diff / Farneback (unified interface)
+  MaskPostprocessor    morphology → connected components → temporal persistence
+  MotionVisualizer     box drawing, HUD overlay, 3-panel debug panel
+
+Pipeline per frame:
+  raw frame
+    → TIPreprocessor.process()       (CLAHE + IIR)
+    → MotionDetector.apply()         (raw binary mask)
+    → [skip if frame_idx < warmup]
+    → MaskPostprocessor.apply_morphology()
+    → MaskPostprocessor.extract_blobs()
+    → MaskPostprocessor.update_tracker()   → (confirmed, candidates)
+    → MotionVisualizer.draw_boxes()        (green=confirmed, yellow=candidate)
+    → MotionVisualizer.draw_hud()
+    → [debug panel if --debug]
+    → VideoWriter.write()
+
+Key TI design decisions:
+  Problem                              Solution
+  ────────────────────────────────     ──────────────────────────────────────────
+  Low contrast at 2-3km                CLAHE clip=2.5, tile=12 (local enhancement)
+  Per-frame thermal speckle            IIR smoothing alpha=0.4 (~2-frame average)
+  TI has no shadow semantics           detectShadows=False on MOG2/KNN
+  Single-frame noise bursts            Temporal persistence tracker: N consecutive frames
+  Noise streaks vs compact blobs       Solidity filter (streaks ~0.1, humans ~0.4-0.8)
+  2x2px blobs invisible to operator    Auto-expand boxes by 4px when area < 16px²
+  MOG2 all-foreground during init      Warmup suppression for first history/2 frames
+
+Warmup logic:
+  warmup_frames = history // 2
+  During warmup: no post-processing, "WARMING UP" HUD overlay displayed.
+  Reason: MOG2 produces near-all-foreground mask during first ~20 frames while
+  the Gaussian model per pixel is uninitialised.
+
+
+--- All CLI arguments ------------------------------------------------------------
+
+Group              Flag                    Default    Notes
+─────────────────  ──────────────────────  ─────────  ──────────────────────────
+I/O                --input / -i            required   Input video path
+                   --output / -o           auto       <input>_motion.mp4
+                   --display               off        Show live OpenCV window
+                   --debug                 off        3-panel debug view (3x wide)
+                   --scale                 1.0        Resize factor
+
+Detection method   --method                mog2       mog2/knn/diff/farneback
+                   --history               200        BG model memory (frames)
+                   --threshold             12.0       Sensitivity (lower=more)
+                   --diff-frames           5          Frame gap for diff method
+
+TI preprocessing   --clahe / --no-clahe    ON         Toggle CLAHE
+                   --clahe-clip            2.5        CLAHE clip limit
+                   --clahe-tile            12         CLAHE tile size (px)
+                   --temporal-smooth /     ON         Toggle IIR smoothing
+                     --no-temporal-smooth
+                   --alpha                 0.4        IIR current-frame weight
+
+Post-processing    --morph-close           5          Closing kernel (fill holes)
+                   --morph-open            3          Opening kernel (remove noise)
+                   --min-area              4          Min blob area px²
+                   --max-area              5000       Max blob area px²
+                   --min-solidity          0.3        Min blob compactness 0-1
+                   --persistence           3          Frames to confirm blob
+
+
+--- ti_motion_tune.py (Streamlit app) -------------------------------------------
+
+Run:
+  streamlit run scripts/ti_motion_tune.py
+  streamlit run scripts/ti_motion_tune.py --server.port 8502 --server.address 0.0.0.0
+
+Features:
+  - Loads video and builds background model on demand
+  - 4-panel view: Original | Preprocessed | Raw Motion Mask | Detections
+  - Background model params (method, threshold, CLAHE, etc.) require Rebuild click
+  - Post-processing params (area, morphology, persistence) update instantly
+  - "Raw Mask coverage %" diagnostic — key metric:
+      > 30%  →  BG model failing (threshold too low, camera moving, CLAHE+compression)
+      10-30% →  noisy, may be tunable
+      < 10%  →  healthy, post-processing can isolate targets
+  - Export tab: shows exact CLI command to reproduce tuned settings
+  - Export full video button: applies current post-processing to cached masks
+
+Key architecture: builds background model ONCE and caches raw masks in
+st.session_state, so post-processing params can be tuned instantly without
+reprocessing the background model.
+
+
+================================================================================
+TUNING LESSONS LEARNED
+================================================================================
+
+1. CLAHE + compressed video = false positives everywhere
+   CLAHE applies per-tile histogram equalization. When a moving person enters a
+   tile, the tile histogram shifts, causing static background pixels in that tile
+   to be remapped differently. MOG2 flags these as foreground.
+   FIX: --no-clahe for any compressed (H.264/MP4) video.
+        --clahe-tile 32 or 64 (larger tiles) reduces this for TI footage.
+        Only enable CLAHE for native (uncompressed) TI sensor output.
+
+2. IIR temporal smooth can hurt on regular video
+   IIR smoothing creates temporal correlations that interact poorly with MOG2's
+   independence assumption. For regular video, disable it.
+   FIX: --no-temporal-smooth unless you have genuine thermal speckle noise.
+
+3. min-area=4 is ONLY for extreme-range (3km) TI
+   At normal/close range a person is 500-5000+ px². min-area=4 passes every
+   compression artifact and sensor hot pixel as a candidate.
+   FIX: Set --min-area based on expected target size for your range:
+        1km TI: ~150-600 px²    2-3km TI: 4-30 px²    Regular video: 500-5000 px²
+
+4. persistence=3 is met by H.264 block artifacts
+   DCT block artifacts are spatially consistent frame-to-frame and persist 3+
+   frames easily. For compressed video, raise to 8-15.
+   FIX: --persistence 15 for compressed video with camera movement.
+
+5. Camera movement kills background subtraction
+   All test videos had camera movement. MOG2/KNN assume a static background.
+   Even tiny vibration causes the entire background to be flagged as foreground.
+   FIX: See "Camera Motion Compensation" section below.
+
+
+--- Command that worked best on test_4_static.mp4 (partially static drone crop) -
+
+python scripts/ti_motion_detect.py
+  --input   test_cases/test_4_static.mp4
+  --method  diff
+  --history 200
+  --threshold 30
+  --diff-frames 10
+  --no-clahe
+  --no-temporal-smooth
+  --morph-close 3
+  --morph-open  1
+  --min-area    1
+  --max-area    100
+  --min-solidity 0.3
+  --persistence 15
+
+Why this works:
+  - diff method: no background model to corrupt from camera motion
+  - diff-frames 10: larger lookback catches slow-moving distant blobs
+  - no-clahe + no-temporal-smooth: avoids H.264 artifact amplification
+  - min-area 1 + max-area 100: targets tiny far-range blobs only
+  - persistence 15: at ~30fps = 0.5 seconds — strong noise rejection
+  - threshold 30: above H.264 compression noise variance
+
+
+================================================================================
+NEXT STEP: CAMERA MOTION COMPENSATION
+================================================================================
+
+The fundamental problem: all real-world test videos have camera movement.
+Background subtraction (MOG2/KNN) assumes a fixed camera. Frame differencing
+(diff method) is less affected but still degrades with movement.
+
+--- Recommended Algorithm: ECC (Enhanced Correlation Coefficient) ----------------
+
+cv2.findTransformECC — built into OpenCV, no extra dependencies.
+
+WHY ECC over other methods:
+  - Works directly on pixel INTENSITY — no feature extraction needed
+  - Feature detectors (ORB, SIFT, AKAZE) fail on TI imagery because:
+      TI images have very low texture, sparse/no corners
+      Feature matching produces too few/unreliable correspondences
+  - ECC handles TI's uniform regions better than feature-based methods
+  - Achieves sub-pixel accuracy in 10-20 iterations for small camera motion
+  - Directly handles thermal sensor illumination drift (correlation-based)
+
+Motion model: MOTION_AFFINE (6 DOF)
+  Captures: translation (x,y) + rotation + scale + shear
+  WHY NOT translation-only: camera vibration includes micro-rotations
+  WHY NOT homography (8 DOF): overkill, introduces border warping artifacts
+
+Fallback when ECC fails (low texture regions, fast motion):
+  Sparse Lucas-Kanade optical flow on background grid points
+  → Estimate affine transform from flow vectors via RANSAC
+
+Correlation coefficient threshold: 0.85
+  If ECC returns CC < 0.85: reject transform, use identity (no compensation)
+
+Key parameters:
+  criteria = (TERM_CRITERIA_EPS | TERM_CRITERIA_COUNT, 50, 0.001)
+  gaussFiltSize = 5   (pre-blur reduces NETD sensor noise before ECC)
+
+Temporal stability:
+  Apply Kalman filter over the estimated transformation parameters to smooth
+  out frame-to-frame jitter in the estimated camera motion.
+
+--- How to integrate into ti_motion_detect.py -----------------------------------
+
+New class to add: CameraMotionCompensator
+
+Position in pipeline (before existing stages):
+
+  raw frame
+    → CameraMotionCompensator.compensate(frame)   ← NEW
+        1. Estimate global motion via ECC (or LK fallback)
+        2. Warp reference frame to current camera coordinates
+        3. Return compensated frame (for diff method)
+           OR update internal reference background (for MOG2/KNN)
+    → TIPreprocessor.process()
+    → MotionDetector.apply()
+    → [rest of pipeline unchanged]
+
+New CLI flag:
+  --compensate / --no-compensate    (default: on when implemented)
+  --ecc-threshold FLOAT             (default: 0.85)
+  --ecc-warp-mode [affine|euclidean|translation]  (default: affine)
+
+Algorithm decision tree per frame:
+  Try ECC with MOTION_AFFINE
+    ├─ CC > 0.85 → use ECC transform
+    ├─ 0.70 < CC ≤ 0.85 → use ECC transform + Kalman smoothing
+    └─ CC ≤ 0.70 → fallback to sparse LK optical flow
+         ├─ ≥ 3 good flow points → estimate affine
+         └─ < 3 points → identity (no compensation)
+
+References:
+  - cv2.findTransformECC: https://docs.opencv.org/4.x/dc/d6b/group__video__track.html
+  - BoT-SORT GMC module (uses LK+RANSAC for tracking with camera motion)
+  - WTI-SLAM (2025): confirms ECC/intensity-based > feature-based for thermal
+  - Digital Stabilization of Thermal Videos for Border Monitoring (ISIJ 2025)
+
+
+================================================================================
+FILE INVENTORY
+================================================================================
+
+scripts/ti_motion_detect.py     Stage 1 motion detection CLI (v1, ~820 lines)
+scripts/ti_motion_tune.py       Streamlit interactive tuning app
+scripts/video_inference.py      Stage 2+3 YOLO + ByteTrack (existing, unmodified)
+scripts/sahi_video_inference.py Stage 2+3 with SAHI slicing (existing, unmodified)
+
+docs/motion_detection.txt       Original research doc (three-stage pipeline design)
+docs/claude_motion_detection_v1.txt  THIS FILE — implementation notes
+
+
+================================================================================
+FUTURE ROADMAP
+================================================================================
+
+[v1 - DONE]
+  - ti_motion_detect.py: MOG2/KNN/diff/farneback with full parameter control
+  - ti_motion_tune.py: Streamlit tuner with 4-panel view
+  - Identified camera motion as core problem
+
+[v2 - NEXT]
+  - Add CameraMotionCompensator class (ECC + LK fallback + Kalman)
+  - New CLI flags: --compensate, --ecc-threshold, --ecc-warp-mode
+  - Test on all test_cases/ videos
+  - Tune per video type (slight vibration vs active pan)
+
+[v3 - FUTURE]
+  - Integrate Stage 1 output (motion ROIs) as attention mask for YOLO
+  - Feed confirmed blobs as ROI crops to YOLO inference
+  - Connect to ByteTrack for multi-frame track IDs across stages
+
+[v4 - FUTURE]
+  - Static vegetation/tree mask (mask out known high-movement regions)
+  - Multi-scale processing (different min/max-area pass at different scales)
+  - Adaptive threshold based on scene statistics per frame
