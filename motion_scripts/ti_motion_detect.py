@@ -75,9 +75,16 @@ class TrackedBlob:
     blob_id: int
     centroid: Tuple[float, float]
     bbox: Tuple[int, int, int, int]
+    initial_centroid: Tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
     frames_seen: int = 1
     frames_absent: int = 0
     confirmed: bool = False
+
+    @property
+    def displacement(self) -> float:
+        dx = self.centroid[0] - self.initial_centroid[0]
+        dy = self.centroid[1] - self.initial_centroid[1]
+        return (dx * dx + dy * dy) ** 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -201,15 +208,16 @@ class MotionDetector:
             )
         # diff and farneback are stateless — only the frame buffer is needed
 
-    def apply(self, gray: np.ndarray) -> np.ndarray:
+    def apply(self, gray: np.ndarray, learning_rate: float = -1) -> np.ndarray:
         """
         Input:  preprocessed grayscale frame (H, W) uint8
         Output: binary foreground mask        (H, W) uint8  {0, 255}
+        learning_rate: -1=adaptive, 0=freeze model, 0.05=fast rebuild
         """
         if self.method == "mog2":
-            return self._apply_mog2(gray)
+            return self._apply_mog2(gray, learning_rate)
         elif self.method == "knn":
-            return self._apply_knn(gray)
+            return self._apply_knn(gray, learning_rate)
         elif self.method == "diff":
             return self._apply_diff(gray)
         elif self.method == "farneback":
@@ -217,13 +225,13 @@ class MotionDetector:
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
-    def _apply_mog2(self, gray: np.ndarray) -> np.ndarray:
-        raw = self._mog2.apply(gray)
+    def _apply_mog2(self, gray: np.ndarray, learning_rate: float = -1) -> np.ndarray:
+        raw = self._mog2.apply(gray, learningRate=learning_rate)
         # MOG2 returns: 255=foreground, 127=shadow (disabled), 0=background
         return (raw > 200).astype(np.uint8) * 255
 
-    def _apply_knn(self, gray: np.ndarray) -> np.ndarray:
-        raw = self._knn.apply(gray)
+    def _apply_knn(self, gray: np.ndarray, learning_rate: float = -1) -> np.ndarray:
+        raw = self._knn.apply(gray, learningRate=learning_rate)
         return (raw > 200).astype(np.uint8) * 255
 
     def _apply_diff(self, gray: np.ndarray) -> np.ndarray:
@@ -290,12 +298,18 @@ class MaskPostprocessor:
         min_solidity: float = 0.3,
         persistence: int = 3,
         spatial_tol: int = 15,
+        min_displacement: float = 0.0,
+        min_density: float = 0.0,
+        max_absent: int = 2,
     ):
         self._min_area = min_area
         self._max_area = max_area
         self._min_solidity = min_solidity
         self._persistence = persistence
         self._spatial_tol = spatial_tol
+        self._min_displacement = min_displacement
+        self._min_density = min_density
+        self._max_absent = max_absent
 
         # Elliptical kernels — better preserve round thermal blobs than rectangles
         ks_close = max(morph_close, 1)
@@ -339,6 +353,12 @@ class MaskPostprocessor:
             y = int(stats[i, cv2.CC_STAT_TOP])
             w = int(stats[i, cv2.CC_STAT_WIDTH])
             h = int(stats[i, cv2.CC_STAT_HEIGHT])
+
+            # Density: blob pixel count / bbox area.  Compact blobs: 0.3-0.8.
+            # Sparse noise merged by morph-close into a large bbox: 0.05-0.15.
+            if self._min_density > 0.0 and w > 0 and h > 0:
+                if area / (w * h) < self._min_density:
+                    continue
 
             # Solidity: area / convex hull area
             # Noise streaks ~0.1–0.2, compact blobs ~0.4–0.8
@@ -391,7 +411,10 @@ class MaskPostprocessor:
                 t.bbox = blob.bbox
                 t.frames_seen += 1
                 t.frames_absent = 0
-                t.confirmed = (t.frames_seen >= self._persistence)
+                t.confirmed = (
+                    t.frames_seen >= self._persistence
+                    and t.displacement >= self._min_displacement
+                )
                 matched_track_ids.add(best_id)
             else:
                 # New track
@@ -401,6 +424,7 @@ class MaskPostprocessor:
                     blob_id=new_id,
                     centroid=blob.centroid,
                     bbox=blob.bbox,
+                    initial_centroid=blob.centroid,
                     frames_seen=1,
                     frames_absent=0,
                     confirmed=False,
@@ -411,7 +435,7 @@ class MaskPostprocessor:
         for tid, track in self._tracked.items():
             if tid not in matched_track_ids:
                 track.frames_absent += 1
-                if track.frames_absent > 2:  # tolerate 2-frame detection gaps
+                if track.frames_absent > self._max_absent:
                     stale.append(tid)
         for tid in stale:
             del self._tracked[tid]
@@ -487,7 +511,7 @@ class MotionVisualizer:
             _draw_single(t, self.COLOR_CANDIDATE, label)
 
         for t in confirmed:
-            label = f"#{t.blob_id} T:{t.frames_seen}"
+            label = f"#{t.blob_id} T:{t.frames_seen} D:{t.displacement:.0f}px"
             _draw_single(t, self.COLOR_CONFIRMED, label)
 
         return img
@@ -606,6 +630,10 @@ def main() -> None:
     det.add_argument("--diff-frames", type=int,   default=5,
                      help="Frame lookback gap for frame-diff method "
                           "(increase to 8–10 for slow distant targets)")
+    det.add_argument("--freeze-after-warmup", action="store_true", default=False,
+                     help="Freeze the background model (learningRate=0) once warmup "
+                          "completes. Prevents MOG2/KNN from absorbing slow-moving "
+                          "objects during long journeys. Best for static cameras.")
 
     # TI preprocessing
     pre = parser.add_argument_group("TI preprocessing")
@@ -640,6 +668,27 @@ def main() -> None:
     post.add_argument("--persistence",  type=int,   default=3,
                       help="Frames a blob must persist to become CONFIRMED "
                            "(thermal noise lasts 1–2 frames; 3 eliminates it)")
+    post.add_argument("--min-displacement", type=float, default=0.0,
+                      help="Min pixels a blob must travel from its origin to be CONFIRMED "
+                           "(0=disabled; 30–80 eliminates stationary shimmer/noise, "
+                           "keeps only objects that actually cross the frame)")
+    post.add_argument("--min-density",     type=float, default=0.0,
+                      help="Min ratio of blob pixels to bbox area (0=disabled). "
+                           "Compact objects: 0.3-0.5. Filters large sparse bboxes "
+                           "from morph-close merging nearby noise pixels. "
+                           "NOTE: min/max-area = blob PIXEL COUNT not bbox size.")
+    post.add_argument("--spatial-tol",     type=int,   default=15,
+                      help="Max px centroid can move between frames to match same track "
+                           "(default 15). Raise to 30-50 for fast objects like a bike — "
+                           "if too small the tracker resets frames_seen mid-journey.")
+    post.add_argument("--no-candidates",   dest="show_candidates", action="store_false",
+                      default=True,
+                      help="Hide yellow candidate boxes — only confirmed (green) shown. "
+                           "Use when persistence is high and screen is cluttered.")
+    post.add_argument("--max-absent",      type=int, default=2,
+                      help="Frames a track can be undetected before being deleted "
+                           "(default 2). Raise to 5-8 for difficult videos where "
+                           "detection is intermittent and tracks reset mid-journey.")
 
     args = parser.parse_args()
 
@@ -679,7 +728,8 @@ def main() -> None:
           f"  Temporal: {'ON' if args.temporal_smooth else 'OFF'}")
     print(f"Persist : {args.persistence} frames  "
           f"  min_area: {args.min_area}px²  "
-          f"  threshold: {args.threshold}")
+          f"  threshold: {args.threshold}  "
+          f"  min_displacement: {args.min_displacement}px")
     print()
 
     # ---------------------------------------------------------------- instantiate pipeline
@@ -703,6 +753,10 @@ def main() -> None:
         max_area=args.max_area,
         min_solidity=args.min_solidity,
         persistence=args.persistence,
+        spatial_tol=args.spatial_tol,
+        min_displacement=args.min_displacement,
+        min_density=args.min_density,
+        max_absent=args.max_absent,
     )
     vis = MotionVisualizer(persistence=args.persistence)
 
@@ -742,7 +796,8 @@ def main() -> None:
 
         # --- pipeline ---
         preprocessed = preprocessor.process(frame)
-        raw_mask     = detector.apply(preprocessed)
+        lr = 0.0 if (args.freeze_after_warmup and not warming_up) else -1.0
+        raw_mask     = detector.apply(preprocessed, learning_rate=lr)
 
         if warming_up:
             confirmed, candidates = [], []
@@ -753,7 +808,8 @@ def main() -> None:
             confirmed, candidates = postproc.update_tracker(blobs)
 
         # --- visualise ---
-        annotated = vis.draw_boxes(frame, confirmed, candidates)
+        annotated = vis.draw_boxes(frame, confirmed,
+                                   candidates if args.show_candidates else [])
         annotated = vis.draw_hud(
             annotated, frame_idx, live_fps,
             args.method.upper(), len(candidates), len(confirmed), warming_up,

@@ -1,8 +1,8 @@
 Motion Detection Pipeline — Development Notes
 =============================================
 Project: Human-Movement-Detection (TI)
-Status:  v1 implemented, camera motion compensation identified as next step
-Updated: 2026-02-24
+Status:  v2 implemented (stabilisation + PTZ-aware gating)
+Updated: 2026-02-25
 
 
 ================================================================================
@@ -25,16 +25,10 @@ videos independently.
 
 
 ================================================================================
-WHAT WAS BUILT — v1
+WHAT WAS BUILT — v1  (ti_motion_detect.py)
 ================================================================================
 
-Two new scripts in scripts/:
-
-  ti_motion_detect.py   — CLI motion detection pipeline (800+ lines)
-  ti_motion_tune.py     — Streamlit interactive tuning app
-
-
---- ti_motion_detect.py ---------------------------------------------------------
+Script: scripts/ti_motion_detect.py  (~820 lines)
 
 Architecture: 4 classes + main()
 
@@ -74,7 +68,27 @@ Warmup logic:
   the Gaussian model per pixel is uninitialised.
 
 
---- All CLI arguments ------------------------------------------------------------
+--- v1 post-session additions (2026-02-25) ---------------------------------------
+
+Two new post-processing parameters added to MaskPostprocessor + CLI:
+
+1. --min-displacement  (default: 0 = disabled)
+   Every TrackedBlob now stores its initial_centroid (where it first appeared).
+   A blob is only CONFIRMED if:
+     frames_seen >= persistence  AND  displacement(current, initial) >= min_displacement
+
+   Why: thermal shimmer / DCT artifacts flicker in-place → displacement near 0.
+   A bike/person crossing a road accumulates 40-200px displacement easily.
+   This is the single most effective filter for static-camera false positives.
+
+   Recommended: 30-80px for road/perimeter scenes.
+   Box label now shows: "#3 T:15 D:62px" — use this to calibrate the value.
+
+2. TrackedBlob.displacement property (computed from initial_centroid to centroid)
+   Available on both confirmed and candidate tracks.
+
+
+--- v1 CLI arguments (full table) -----------------------------------------------
 
 Group              Flag                    Default    Notes
 ─────────────────  ──────────────────────  ─────────  ──────────────────────────
@@ -102,6 +116,8 @@ Post-processing    --morph-close           5          Closing kernel (fill holes
                    --max-area              5000       Max blob area px²
                    --min-solidity          0.3        Min blob compactness 0-1
                    --persistence           3          Frames to confirm blob
+                   --min-displacement      0.0        Min px travel to confirm
+                                                      (0=disabled; 30-80 for roads)
 
 
 --- ti_motion_tune.py (Streamlit app) -------------------------------------------
@@ -125,6 +141,181 @@ Features:
 Key architecture: builds background model ONCE and caches raw masks in
 st.session_state, so post-processing params can be tuned instantly without
 reprocessing the background model.
+
+
+================================================================================
+WHAT WAS BUILT — v2  (ti_motion_detect_v2.py)
+================================================================================
+
+Script: scripts/ti_motion_detect_v2.py  (~600 lines)
+
+Adds two new opt-in stages at the front of the pipeline. All v1 parameters
+are preserved. New stages are off by default — add --stabilize / --ptz-aware.
+
+New classes added:
+
+  CameraStabilizer       LK optical flow + RANSAC affine + EMA smoothing
+  CameraMotionSensor     RANSAC global motion magnitude + state machine
+
+v2 pipeline per frame:
+  raw frame
+    → [optional] CameraMotionSensor.update(raw_gray)   ← PTZ state decision
+    → [optional] CameraStabilizer.stabilize(frame)     ← shake correction
+    → TIPreprocessor.process()
+    → MotionDetector.apply(learning_rate=...)           ← lr set by PTZ state
+    → [skip if warming_up OR ptz_state != ACTIVE]
+    → MaskPostprocessor.apply_morphology()
+    → MaskPostprocessor.extract_blobs()
+    → MaskPostprocessor.update_tracker()
+    → MotionVisualizer.draw_boxes() + draw_hud()
+    → VideoWriter.write()
+
+
+--- CameraStabilizer (--stabilize) ----------------------------------------------
+
+Purpose: corrects handheld/mount vibration before background subtraction.
+
+Algorithm per frame:
+  1. goodFeaturesToTrack (Shi-Tomasi)  →  sparse corners in previous gray frame
+  2. calcOpticalFlowPyrLK             →  track corners into current frame
+  3. estimateAffinePartial2D(RANSAC)  →  4-DOF model (translate + rotate only,
+                                         no shear/scale). RANSAC discards moving
+                                         object pixels as outliers.
+  4. Accumulate raw trajectory [cum_dx, cum_dy, cum_da]
+  5. EMA smooth: smooth += alpha * (cum - smooth)  where alpha = 2/(radius+1)
+  6. Correction warp = smooth - raw (where we want to be minus where we are)
+  7. warpAffine with BORDER_REPLICATE (no black border triangles)
+
+Why RANSAC is key:
+  Dense optical flow sees everything — objects AND camera. RANSAC fits only the
+  dominant (majority) motion pattern. Moving objects are statistical outliers and
+  get discarded automatically. This is also why the same approach works for
+  PTZ motion detection (see CameraMotionSensor below).
+
+Tuning --stabilize-radius:
+  Large (50-100): very stable output, handles slow drift well, may over-crop at edges
+  Small (10-20):  faster response to intentional repositioning, less border crop
+  Default 30 is a good starting point for handheld phone footage.
+
+
+--- CameraMotionSensor (--ptz-aware) --------------------------------------------
+
+Purpose: detects camera pan/tilt and manages background model lifecycle.
+
+Algorithm:
+  Same LK + RANSAC affine estimation as CameraStabilizer, but instead of
+  correcting the frame, we extract the translation magnitude in px/frame.
+  If magnitude > --ptz-motion-thresh: camera is moving.
+
+State machine:
+  MOVING   →  pan/tilt detected (motion > threshold px/frame)
+               learningRate=0  (BG model FROZEN — not corrupted by pan frames)
+               Detections suppressed. HUD shows "PTZ MOVING  12.3 px/f".
+
+  SETTLING →  camera just stopped. Background model being rebuilt from scratch.
+               learningRate=0.05  (fast learning, ~20x faster than default)
+               Detections suppressed. HUD shows progress bar "SETTLING BG 63%".
+
+  ACTIVE   →  static for --ptz-settle-time seconds. Full detection.
+               learningRate=-1  (MOG2/KNN adaptive default)
+
+On MOVING→SETTLING transition:
+  detector.reset() + postproc.reset() + preprocessor.reset() are all called.
+  The background model is trained ONLY on static footage. This eliminates the
+  classic pan artifact where MOG2 learns pan blur as "background" for seconds.
+
+NOTE: CameraMotionSensor runs on the raw (pre-stabilisation) frame. The stabilizer
+corrects small shake; the motion sensor detects large intentional pans. Keeping
+them separate means one doesn't interfere with the other.
+
+Tuning --ptz-motion-thresh:
+  The HUD shows live motion in px/frame. Run with --ptz-aware on a test clip,
+  read the MOVING value during an actual pan (e.g. 15-40px/f typically) and the
+  static value (usually 0.5-2px/f). Set threshold to midpoint.
+  Default 5.0 is reasonable for most PTZ cams; try 3-4 for sensitive detection.
+
+
+--- On not having hardware sensor values ----------------------------------------
+
+Context: PTZ unit has no IMU/encoder output available (no SDK access).
+Question: Is CV-only PTZ detection sufficient?
+
+Short answer: Yes, for this use case.
+
+Long answer by scenario:
+
+  Scenario 1 — Large manual pan (30°+ repositioning every 30 min):
+    RANSAC detects 15-50px/frame of global motion easily.
+    State machine fires reliably. This is the primary use case. WORKS WELL.
+
+  Scenario 2 — Micro-vibration during "static" hold (e.g. wind, motor hum):
+    CameraStabilizer handles this before it reaches the BG subtractor.
+    Vibration is small (1-3px), does not trigger MOVING state.
+    WORKS WELL.
+
+  Scenario 3 — Very slow creep/drift (1-2px/frame):
+    Hard to threshold. BUT slow drift also doesn't corrupt MOG2 badly —
+    the model adapts over its history window. ACCEPTABLE.
+
+  Scenario 4 — Pan during an active detection:
+    Detection is lost during pan + settle window (5-10s).
+    THIS IS THE UNAVOIDABLE COST without hardware IMU.
+    Military systems use IMU to maintain detection during pan via homography
+    compensation against a panoramic background model. Complex to implement.
+    For surveillance with ~30 min repositioning intervals: ACCEPTABLE.
+
+What military-grade systems actually do:
+  1. Hardware encoder/IMU on the PTZ unit → pan/tilt angles fed directly.
+     No CV estimation needed. Immediate, zero-latency state change.
+  2. Panoramic background model: a full spherical background image is maintained.
+     Each frame is registered to the panorama (not to a reference frame), so
+     background subtraction works even DURING a pan.
+  3. Multi-camera overlapping coverage: at least one camera is always static.
+  The CV-only approach implemented here is the pragmatic software equivalent
+  that works well when the camera is mostly static.
+
+
+--- v2 CLI arguments (new flags only, all v1 flags also present) -----------------
+
+Group              Flag                    Default    Notes
+─────────────────  ──────────────────────  ─────────  ──────────────────────────
+Stabilisation      --stabilize             off        Enable shake stabilisation
+                   --stabilize-radius      30         EMA window (frames)
+
+PTZ-aware          --ptz-aware             off        Enable PTZ state machine
+                   --ptz-motion-thresh     5.0        px/frame to classify MOVING
+                   --ptz-settle-time       5.0        Seconds static before ACTIVE
+
+
+--- v2 recommended commands (PTZ static cam, bike on road) ----------------------
+
+# MOG2 with stabilisation + displacement filter
+python scripts/ti_motion_detect_v2.py \
+  --input test_cases/test_10_rev.mp4 \
+  --stabilize --no-clahe \
+  --threshold 30 --min-area 50 \
+  --persistence 12 --min-displacement 40
+
+# KNN + PTZ-aware (camera repositioned every 30 min)
+python scripts/ti_motion_detect_v2.py \
+  --input test_cases/test_10_rev.mp4 \
+  --method knn --ptz-aware \
+  --no-clahe --history 400 --threshold 20 \
+  --min-area 50 --persistence 12 --min-displacement 40 \
+  --ptz-motion-thresh 5.0 --ptz-settle-time 5.0
+
+# Both stabiliser + PTZ-aware + debug view (use for initial calibration)
+python scripts/ti_motion_detect_v2.py \
+  --input test_cases/test_10_rev.mp4 \
+  --stabilize --ptz-aware --debug \
+  --no-clahe --threshold 30 --min-area 50
+
+# diff method (no warmup period, no BG model to corrupt)
+python scripts/ti_motion_detect_v2.py \
+  --input test_cases/test_10_rev.mp4 \
+  --method diff --stabilize \
+  --no-clahe --diff-frames 8 --threshold 25 \
+  --min-area 50 --persistence 10 --min-displacement 40
 
 
 ================================================================================
@@ -153,151 +344,107 @@ TUNING LESSONS LEARNED
 4. persistence=3 is met by H.264 block artifacts
    DCT block artifacts are spatially consistent frame-to-frame and persist 3+
    frames easily. For compressed video, raise to 8-15.
-   FIX: --persistence 15 for compressed video with camera movement.
+   FIX: --persistence 12-15 for compressed video.
 
 5. Camera movement kills background subtraction
    All test videos had camera movement. MOG2/KNN assume a static background.
    Even tiny vibration causes the entire background to be flagged as foreground.
-   FIX: See "Camera Motion Compensation" section below.
+   FIX: --stabilize for shake/vibration; --ptz-aware for pan/tilt. See v2.
+
+6. min-displacement is the best single FP reducer for static-cam scenes
+   Shimmer, DCT blocks, sensor noise — they all appear in place. Anything that
+   doesn't travel 30+ pixels from its first detection is not a real target.
+   FIX: --min-displacement 40 as a baseline for road/perimeter scenes.
+        Watch the "D:XXpx" label on confirmed boxes to calibrate your scene.
+
+7. The diff method is the most robust to all the above problems
+   No background model = no warmup, no corruption from camera motion, no slow
+   adaptation. The cost: no persistence of the model across time, so slow targets
+   need large --diff-frames (8-15).
+   FIX: Start with --method diff --diff-frames 8 when everything else fails.
+
+8. MOG2/KNN background absorption — objects detected partially then lost
+   MOG2/KNN are CONTINUOUSLY adaptive. They never stop learning. After ~100-200
+   frames of a moving object occupying the same pixels, the model absorbs it as
+   background. Detection weakens progressively → track resets → eventually nothing.
+   This is NOT a warmup issue — it happens throughout the entire video.
+   Sun/shadows do NOT affect TI cameras; only slow thermal drift (hours scale) does.
+
+9. --freeze-after-warmup sounds like the fix but trades one problem for another
+   Freezing the model (learningRate=0 after warmup) stops background absorption of
+   the target, but also stops the model from absorbing persistent noise and thermal
+   sensor flicker that the adaptive model would quietly clean up. Net result on TI
+   compressed video: more persistent FPs, comparable or slightly worse overall.
+   VERDICT: --freeze-after-warmup is not reliable for TI. Use --method diff for
+   long-journey detection.
 
 
---- Command that worked best on test_4_static.mp4 (partially static drone crop) -
+--- Commands that worked on specific test cases ---------------------------------
 
-python scripts/ti_motion_detect.py
-  --input   test_cases/test_4_static.mp4
-  --method  diff
-  --history 200
-  --threshold 30
-  --diff-frames 10
-  --no-clahe
-  --no-temporal-smooth
-  --morph-close 3
-  --morph-open  1
-  --min-area    1
-  --max-area    100
-  --min-solidity 0.3
-  --persistence 15
+test_4_static.mp4 (partially static drone crop):
+  python scripts/ti_motion_detect.py \
+    --input test_cases/test_4_static.mp4 \
+    --method diff --history 200 --threshold 30 --diff-frames 10 \
+    --no-clahe --no-temporal-smooth \
+    --morph-close 3 --morph-open 1 \
+    --min-area 1 --max-area 100 --min-solidity 0.3 --persistence 15
 
-Why this works:
-  - diff method: no background model to corrupt from camera motion
-  - diff-frames 10: larger lookback catches slow-moving distant blobs
-  - no-clahe + no-temporal-smooth: avoids H.264 artifact amplification
-  - min-area 1 + max-area 100: targets tiny far-range blobs only
-  - persistence 15: at ~30fps = 0.5 seconds — strong noise rejection
-  - threshold 30: above H.264 compression noise variance
-
-
-================================================================================
-NEXT STEP: CAMERA MOTION COMPENSATION
-================================================================================
-
-The fundamental problem: all real-world test videos have camera movement.
-Background subtraction (MOG2/KNN) assumes a fixed camera. Frame differencing
-(diff method) is less affected but still degrades with movement.
-
---- Recommended Algorithm: ECC (Enhanced Correlation Coefficient) ----------------
-
-cv2.findTransformECC — built into OpenCV, no extra dependencies.
-
-WHY ECC over other methods:
-  - Works directly on pixel INTENSITY — no feature extraction needed
-  - Feature detectors (ORB, SIFT, AKAZE) fail on TI imagery because:
-      TI images have very low texture, sparse/no corners
-      Feature matching produces too few/unreliable correspondences
-  - ECC handles TI's uniform regions better than feature-based methods
-  - Achieves sub-pixel accuracy in 10-20 iterations for small camera motion
-  - Directly handles thermal sensor illumination drift (correlation-based)
-
-Motion model: MOTION_AFFINE (6 DOF)
-  Captures: translation (x,y) + rotation + scale + shear
-  WHY NOT translation-only: camera vibration includes micro-rotations
-  WHY NOT homography (8 DOF): overkill, introduces border warping artifacts
-
-Fallback when ECC fails (low texture regions, fast motion):
-  Sparse Lucas-Kanade optical flow on background grid points
-  → Estimate affine transform from flow vectors via RANSAC
-
-Correlation coefficient threshold: 0.85
-  If ECC returns CC < 0.85: reject transform, use identity (no compensation)
-
-Key parameters:
-  criteria = (TERM_CRITERIA_EPS | TERM_CRITERIA_COUNT, 50, 0.001)
-  gaussFiltSize = 5   (pre-blur reduces NETD sensor noise before ECC)
-
-Temporal stability:
-  Apply Kalman filter over the estimated transformation parameters to smooth
-  out frame-to-frame jitter in the estimated camera motion.
-
---- How to integrate into ti_motion_detect.py -----------------------------------
-
-New class to add: CameraMotionCompensator
-
-Position in pipeline (before existing stages):
-
-  raw frame
-    → CameraMotionCompensator.compensate(frame)   ← NEW
-        1. Estimate global motion via ECC (or LK fallback)
-        2. Warp reference frame to current camera coordinates
-        3. Return compensated frame (for diff method)
-           OR update internal reference background (for MOG2/KNN)
-    → TIPreprocessor.process()
-    → MotionDetector.apply()
-    → [rest of pipeline unchanged]
-
-New CLI flag:
-  --compensate / --no-compensate    (default: on when implemented)
-  --ecc-threshold FLOAT             (default: 0.85)
-  --ecc-warp-mode [affine|euclidean|translation]  (default: affine)
-
-Algorithm decision tree per frame:
-  Try ECC with MOTION_AFFINE
-    ├─ CC > 0.85 → use ECC transform
-    ├─ 0.70 < CC ≤ 0.85 → use ECC transform + Kalman smoothing
-    └─ CC ≤ 0.70 → fallback to sparse LK optical flow
-         ├─ ≥ 3 good flow points → estimate affine
-         └─ < 3 points → identity (no compensation)
-
-References:
-  - cv2.findTransformECC: https://docs.opencv.org/4.x/dc/d6b/group__video__track.html
-  - BoT-SORT GMC module (uses LK+RANSAC for tracking with camera motion)
-  - WTI-SLAM (2025): confirms ECC/intensity-based > feature-based for thermal
-  - Digital Stabilization of Thermal Videos for Border Monitoring (ISIJ 2025)
+test_10_rev.mp4 (static PTZ, bike at 4-5s):
+  python scripts/ti_motion_detect_v2.py \
+    --input test_cases/test_10_rev.mp4 \
+    --stabilize --ptz-aware --no-clahe \
+    --threshold 30 --min-area 50 \
+    --persistence 12 --min-displacement 40
 
 
 ================================================================================
 FILE INVENTORY
 ================================================================================
 
-scripts/ti_motion_detect.py     Stage 1 motion detection CLI (v1, ~820 lines)
+scripts/ti_motion_detect.py     Stage 1 motion detection CLI v1 (~820 lines)
+scripts/ti_motion_detect_v2.py  Stage 1 v2: + CameraStabilizer + PTZ gating
 scripts/ti_motion_tune.py       Streamlit interactive tuning app
 scripts/video_inference.py      Stage 2+3 YOLO + ByteTrack (existing, unmodified)
 scripts/sahi_video_inference.py Stage 2+3 with SAHI slicing (existing, unmodified)
 
-docs/motion_detection.txt       Original research doc (three-stage pipeline design)
-docs/claude_motion_detection_v1.txt  THIS FILE — implementation notes
+docs/motion_detection.txt           Original research doc (three-stage pipeline)
+docs/claude_motion_detection_v1.txt THIS FILE — implementation notes
 
 
 ================================================================================
-FUTURE ROADMAP
+ROADMAP
 ================================================================================
 
 [v1 - DONE]
   - ti_motion_detect.py: MOG2/KNN/diff/farneback with full parameter control
   - ti_motion_tune.py: Streamlit tuner with 4-panel view
   - Identified camera motion as core problem
+  - Added --min-displacement: displacement-based confirmation filter
 
-[v2 - NEXT]
-  - Add CameraMotionCompensator class (ECC + LK fallback + Kalman)
-  - New CLI flags: --compensate, --ecc-threshold, --ecc-warp-mode
-  - Test on all test_cases/ videos
-  - Tune per video type (slight vibration vs active pan)
+[v2 - DONE]
+  - CameraStabilizer: LK optical flow + RANSAC + EMA trajectory smoothing
+  - CameraMotionSensor: RANSAC global motion → MOVING/SETTLING/ACTIVE state machine
+  - PTZ-aware background gating: freeze/rebuild BG model based on camera state
+  - MOG2/KNN learningRate scheduling per state (0 / 0.05 / -1)
+  - MotionDetector.reset() for clean model rebuild after pan
+  - PTZ state overlay in HUD with progress bar during SETTLING
 
-[v3 - FUTURE]
+[v3 - NEXT: ECC compensation for slow drift]
+  - Add ECC (cv2.findTransformECC) for sub-pixel accurate motion compensation
+  - Handles very slow camera creep that RANSAC threshold misses
+  - ECC + Kalman smoothing over estimated transform parameters
+  - Fallback: current LK+RANSAC when ECC correlation < 0.85
+  - New CLI: --compensate, --ecc-threshold 0.85, --ecc-warp-mode [affine|euclidean]
+  - Relevant especially for TI cameras (low texture → ECC > feature matching)
+
+[v4 - FUTURE: YOLO integration]
   - Integrate Stage 1 output (motion ROIs) as attention mask for YOLO
   - Feed confirmed blobs as ROI crops to YOLO inference
   - Connect to ByteTrack for multi-frame track IDs across stages
 
-[v4 - FUTURE]
+[v5 - FUTURE: robustness]
   - Static vegetation/tree mask (mask out known high-movement regions)
   - Multi-scale processing (different min/max-area pass at different scales)
   - Adaptive threshold based on scene statistics per frame
+  - Panoramic background model (enables detection during PTZ pan — eliminates
+    the detection gap in MOVING/SETTLING states)
