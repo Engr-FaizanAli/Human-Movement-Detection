@@ -451,21 +451,65 @@ ROADMAP
   - MotionDetector.reset() for clean model rebuild after pan
   - PTZ state overlay in HUD with progress bar during SETTLING
 
-[v3 - NEXT: ECC compensation for slow drift]
-  - Add ECC (cv2.findTransformECC) for sub-pixel accurate motion compensation
-  - Handles very slow camera creep that RANSAC threshold misses
-  - ECC + Kalman smoothing over estimated transform parameters
-  - Fallback: current LK+RANSAC when ECC correlation < 0.85
-  - New CLI: --compensate, --ecc-threshold 0.85, --ecc-warp-mode [affine|euclidean]
-  - Relevant especially for TI cameras (low texture → ECC > feature matching)
+[v3 - DONE]
+  - EMA bbox smoothing per track (--bbox-smooth-alpha): damps frame-to-frame
+    blob shape changes so the displayed box moves smoothly
+  - Velocity-predicted track matching (--vel-smooth-alpha): matches blobs to
+    predicted centroid position instead of last known — keeps track ID stable
+    even when thermal blob shape changes dramatically between frames
+  - Label now shows V:px/f (velocity magnitude) for calibration
 
-[v4 - FUTURE: YOLO integration]
+[v4 - DONE]
+  - ExclusionZoneManager: interactive polygon editor, JSON persistence
+  - Zones applied after morphology, before blob extraction
+  - --draw-zones opens editor; --zone-overlay burns zones onto output video
+  - Fixes wind / vegetation false positives permanently per camera position
+
+
+--- v4 commands ---
+
+# Step 1: draw exclusion zones (one-time per camera position)
+python motion_scripts/ti_motion_detect_v4.py \
+  --input test_cases/test_18.mp4 --draw-zones
+# Opens editor on first frame. Click to place vertices, C to close polygon,
+# S to save. Zones saved to test_cases/test_18_zones.json. Script exits.
+
+# Step 2: run detection — zones auto-load from test_18_zones.json
+# MOG2 (default)
+python motion_scripts/ti_motion_detect_v4.py \
+  --input test_cases/test_18.mp4 \
+  --no-clahe --threshold 12 --min-area 20 \
+  --persistence 4 --min-displacement 10 \
+  --spatial-tol 20 --max-absent 5 --no-candidates
+
+# KNN
+python motion_scripts/ti_motion_detect_v4.py \
+  --input test_cases/test_18.mp4 --method knn \
+  --no-clahe --threshold 12 --min-area 20 \
+  --persistence 4 --min-displacement 10 \
+  --spatial-tol 20 --max-absent 5 --no-candidates
+
+# diff (recommended — no warmup, no BG absorption)
+python motion_scripts/ti_motion_detect_v4.py \
+  --input test_cases/test_18.mp4 --method diff --diff-frames 6 \
+  --no-clahe --threshold 12 --min-area 20 \
+  --persistence 4 --min-displacement 10 \
+  --spatial-tol 20 --max-absent 5 --no-candidates
+
+# farneback
+python motion_scripts/ti_motion_detect_v4.py \
+  --input test_cases/test_18.mp4 --method farneback \
+  --no-clahe --threshold 12 --min-area 20 \
+  --persistence 4 --min-displacement 10 \
+  --spatial-tol 20 --max-absent 5 --no-candidates
+
+
+[v5 - FUTURE: YOLO integration]
   - Integrate Stage 1 output (motion ROIs) as attention mask for YOLO
   - Feed confirmed blobs as ROI crops to YOLO inference
   - Connect to ByteTrack for multi-frame track IDs across stages
 
-[v5 - FUTURE: robustness]
-  - Static vegetation/tree mask (mask out known high-movement regions)
+[v6 - FUTURE: robustness]
   - Multi-scale processing (different min/max-area pass at different scales)
   - Adaptive threshold based on scene statistics per frame
   - Panoramic background model (enables detection during PTZ pan — eliminates
