@@ -396,6 +396,28 @@ test_10_rev.mp4 (static PTZ, bike at 4-5s):
     --threshold 30 --min-area 50 \
     --persistence 12 --min-displacement 40
 
+test_18.mp4 (raw NVR TI, static camera — confirmed good results):
+  Context: Direct NVR output, no H.264 recompression. CLAHE and temporal-smooth
+  are NOW safe and beneficial. Threshold can go as low as 8-10. min-area 10-20.
+
+  Baseline (MOG2, no preprocessing):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --no-clahe --no-temporal-smooth --threshold 10 --min-area 20 --max-area 50000 --min-density 0.15 --persistence 4 --min-displacement 10 --spatial-tol 20 --max-absent 4 --no-candidates --output test_18_static.mp4
+
+  MOG2 + CLAHE (local contrast enhancement for faint distant targets):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --clahe --clahe-clip 2.5 --clahe-tile 12 --no-temporal-smooth --threshold 8 --min-area 20 --max-area 50000 --min-density 0.15 --persistence 4 --min-displacement 10 --spatial-tol 20 --max-absent 4 --no-candidates --output test_18_clahe.mp4
+
+  MOG2 + full TI preprocessing (CLAHE + temporal smooth for speckle reduction):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --clahe --clahe-clip 2.5 --temporal-smooth --alpha 0.35 --threshold 8 --min-area 10 --max-area 50000 --min-density 0.15 --persistence 5 --min-displacement 10 --spatial-tol 20 --max-absent 5 --no-candidates --output test_18_fullpreproc.mp4
+
+  KNN + full TI preprocessing (more accurate non-parametric model):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --method knn --history 300 --clahe --clahe-clip 2.5 --temporal-smooth --alpha 0.35 --threshold 12 --min-area 10 --max-area 50000 --min-density 0.15 --persistence 5 --min-displacement 10 --spatial-tol 20 --max-absent 5 --no-candidates --output test_18_knn.mp4
+
+  MOG2 frozen after warmup (viable on raw TI — no H.264 noise to expose):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --clahe --clahe-clip 2.5 --temporal-smooth --alpha 0.35 --threshold 8 --freeze-after-warmup --min-area 10 --max-area 50000 --min-density 0.15 --persistence 5 --min-displacement 10 --spatial-tol 20 --max-absent 5 --no-candidates --output test_18_frozen.mp4
+
+  diff method (no absorption, full journey detection):
+  python motion_scripts/ti_motion_detect_v2.py --input test_cases/test_18.mp4 --method diff --diff-frames 6 --clahe --clahe-clip 2.5 --temporal-smooth --alpha 0.35 --threshold 12 --min-area 10 --max-area 50000 --min-density 0.15 --persistence 4 --min-displacement 10 --spatial-tol 20 --max-absent 5 --no-candidates --output test_18_diff.mp4
+
 
 ================================================================================
 FILE INVENTORY
