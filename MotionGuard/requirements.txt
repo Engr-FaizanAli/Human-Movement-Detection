@@ -1,0 +1,22 @@
+# MotionGuard — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# GUI framework
+PySide6>=6.6.0
+
+# Computer vision (motion detection)
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# Sound alarm
+pygame>=2.5.0
+
+# ONVIF camera discovery (optional — app works without it)
+onvif-zeep>=0.2.12
+WSDiscovery>=2.0.0
+
+# Image processing (for logo PNG→ICO conversion)
+Pillow>=10.0.0
+
+# --- Development / packaging (not needed at runtime) ---
+pyinstaller>=6.0.0
