@@ -1,0 +1,16 @@
+services:
+  motion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: human-movement-detection:latest
+    container_name: human-movement-detection
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      QT_QPA_PLATFORM: offscreen
+    volumes:
+      - ./video_output:/app/video_output
+      - ./test_cases:/app/test_cases
+    command:
+      - Live_Tracking/ti_motion_detect_live_all_cams.py

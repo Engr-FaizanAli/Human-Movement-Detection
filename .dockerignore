@@ -1,0 +1,38 @@
+.git
+.gitignore
+.idea
+.vscode
+.venv
+ragirtulenv
+
+# Python cache/build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+
+# Local data / generated outputs
+123/
+combined/
+processed_images/
+runs/
+video_output/
+video_output_whatsapp/
+yolov8x_humans_v1/
+
+# Common media artifacts
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.jpg
+*.jpeg
+*.png

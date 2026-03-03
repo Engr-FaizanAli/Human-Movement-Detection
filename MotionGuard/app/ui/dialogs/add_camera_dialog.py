@@ -1,5 +1,5 @@
-"""
-add_camera_dialog.py — Add a direct IP camera via ONVIF discovery or manual RTSP URL.
+﻿"""
+add_camera_dialog.py â€” Add a direct IP camera via ONVIF discovery or manual RTSP URL.
 
 Tabs:
   1. ONVIF Scan: broadcasts WS-Discovery, lists discovered devices, resolves RTSP URI
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from storage import repositories as repo
 from utils.net_discovery import discover_onvif_devices, resolve_rtsp_uri
 from utils.rtsp_test import test_rtsp
+from utils.rtsp_templates import build_camera_url
 
 log = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ class AddCameraDialog(QDialog):
             return
 
         self._scan_btn.setEnabled(False)
-        self._scan_status.setText("Scanning… (5 second timeout)")
+        self._scan_status.setText("Scanningâ€¦ (5 second timeout)")
         self._disc_table.setRowCount(0)
 
         self._disc_thread = _DiscoveryThread()
@@ -232,7 +233,7 @@ class AddCameraDialog(QDialog):
             return
         dev = self._discovered[row]
         self._resolve_btn.setEnabled(False)
-        self._resolve_status.setText("Resolving…")
+        self._resolve_status.setText("Resolvingâ€¦")
         self._resolve_thread = _ResolveThread(
             dev["xaddr"],
             self._onvif_user.text(),
@@ -247,7 +248,7 @@ class AddCameraDialog(QDialog):
             self._rtsp_url_edit.setText(rtsp_url)
             self._manual_user.setText(self._onvif_user.text())
             self._manual_pass.setText(self._onvif_pass.text())
-            self._resolve_status.setText("Resolved — check Manual RTSP tab")
+            self._resolve_status.setText("Resolved â€” check Manual RTSP tab")
             self._resolve_status.setStyleSheet("color: #006400;")
             self._tabs.setCurrentIndex(1)  # switch to Manual tab
         else:
@@ -255,12 +256,19 @@ class AddCameraDialog(QDialog):
             self._resolve_status.setStyleSheet("color: #8b0000;")
 
     def _test_manual(self) -> None:
-        url = self._rtsp_url_edit.text().strip()
-        if not url:
+        raw_url = self._rtsp_url_edit.text().strip()
+        if not raw_url:
             self._manual_test_result.setText("Enter a URL first.")
             return
+
+        url = build_camera_url(
+            raw_url,
+            username=self._manual_user.text().strip(),
+            password=self._manual_pass.text(),
+        )
+
         self._manual_test_btn.setEnabled(False)
-        self._manual_test_result.setText("Testing…")
+        self._manual_test_result.setText("Testing...")
         self._test_thread = _TestThread(url)
         self._test_thread.result_ready.connect(self._on_test_done)
         self._test_thread.start()
@@ -303,3 +311,4 @@ class AddCameraDialog(QDialog):
 
         log.info("Camera saved: %s (%s)", name, cid)
         self.accept()
+

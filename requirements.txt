@@ -1,4 +1,4 @@
-﻿ultralytics
-matplotlib
-Pillow
-streamlit
+﻿opencv-python-headless
+numpy
+imutils
+ffmpeg-python

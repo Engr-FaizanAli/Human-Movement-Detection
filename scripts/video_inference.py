@@ -29,6 +29,7 @@ import numpy as np
 
 
 SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v"}
+DEFAULT_MODEL_PATH = "yolov8x.pt"
 
 
 def generate_colors(n: int):
@@ -179,7 +180,7 @@ def main():
         description="YOLO video inference with ByteTrack/BotSort tracking",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--model",   "-m", required=True,                   help="Path to YOLO .pt model")
+    parser.add_argument("--model",   "-m", default=DEFAULT_MODEL_PATH,      help="Path to YOLO .pt model")
     parser.add_argument("--input",   "-i", required=True,                   help="Input video file or folder")
     parser.add_argument("--output",  "-o", default="./video_output",        help="Output directory")
     parser.add_argument("--conf",          type=float, default=0.4,         help="Confidence threshold")
@@ -190,7 +191,6 @@ def main():
         choices=["bytetrack.yaml", "botsort.yaml"],
         help="bytetrack.yaml = faster  |  botsort.yaml = more accurate (uses ReID features)",
     )
-
     args = parser.parse_args()
     run_inference(args.model, args.input, args.output, args.conf, args.iou, args.tracker)
 
