@@ -2,8 +2,8 @@
 source_manager.py — Manages all SourceWorker instances.
 
 Rules:
-  - Maximum 3 sources active simultaneously
-  - start_source() returns False (not raises) when at capacity
+  - Sources can be started dynamically (no hard active-source cap)
+  - start_source() returns False only on unresolved/invalid source
   - Workers are stopped gracefully on remove/disable
   - Provides a unified source list (recorders+channels, cameras, offline)
 """
@@ -20,15 +20,12 @@ from utils.rtsp_templates import build_channel_url, build_camera_url
 
 log = logging.getLogger(__name__)
 
-MAX_ACTIVE = 3
-
-
 class SourceManager(QObject):
     # Signals for UI
     source_added     = Signal(dict)        # source info dict
     source_removed   = Signal(str)         # source_id
     active_changed   = Signal(list)        # list of active source_ids
-    at_capacity      = Signal()            # emitted when start_source fails (3 already active)
+    at_capacity      = Signal()            # reserved for backward compatibility
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -104,16 +101,10 @@ class SourceManager(QObject):
     def start_source(self, source_id: str) -> bool:
         """
         Start detection on the given source.
-        Returns False if already at MAX_ACTIVE capacity.
         """
         if source_id in self._workers:
             log.debug("start_source: %s already active", source_id)
             return True
-
-        if len(self._workers) >= MAX_ACTIVE:
-            log.warning("start_source: at capacity (%d/%d)", len(self._workers), MAX_ACTIVE)
-            self.at_capacity.emit()
-            return False
 
         source_info = self._resolve_source(source_id)
         if source_info is None:

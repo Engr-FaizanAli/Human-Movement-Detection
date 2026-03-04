@@ -1,8 +1,8 @@
-# MotionGuard
+﻿# MotionGuard
 
 Production-grade Windows desktop application for MOG2-based motion detection.
 Supports Dahua NVR, Hikvision DVR/NVR, direct IP cameras (RTSP/ONVIF),
-and local video files — with polygon exclusion zones and multi-source grid display.
+and local video files â€” with polygon exclusion zones and multi-source grid display.
 
 ---
 
@@ -45,7 +45,7 @@ Application data is stored in `%APPDATA%\MotionGuard\`
 4. Stream Preference: **Substream** (recommended for low CPU usage)
 5. Template: **Dahua NVR** (auto-selected)
 6. Click **Test Channel** to verify connectivity
-7. Click **Save Recorder** — channels CH1..CHN appear in the device tree
+7. Click **Save Recorder** â€” channels CH1..CHN appear in the device tree
 
 ### 2. Add a Hikvision DVR/NVR
 
@@ -65,45 +65,42 @@ Application data is stored in `%APPDATA%\MotionGuard\`
 
 ### 3. Scan ONVIF Cameras
 
-1. Click **Scan ONVIF** — a WS-Discovery broadcast finds devices on the LAN
+1. Click **Scan ONVIF** â€” a WS-Discovery broadcast finds devices on the LAN
 2. Select a discovered device, enter credentials, click **Resolve RTSP Stream**
 3. The RTSP URL is auto-filled; click **Save Camera**
 
 ### 4. Add a Camera Manually (RTSP)
 
-1. Click **Add Camera** → **Manual RTSP** tab
+1. Click **Add Camera** â†’ **Manual RTSP** tab
 2. Enter the full RTSP URL, optionally add username/password separately
 3. Click **Test Connection** to verify
 4. Enter a name and click **Save Camera**
 
-### 5. Run Detection on 1–3 Sources
+### 5. Run Detection on Multiple Sources (Dynamic Grid)
 
 1. Sources appear in the left **Devices** panel
-2. Double-click a channel/camera to activate it (or right-click → Start)
-3. The center grid adjusts automatically:
-   - 1 source: full screen
-   - 2 sources: side by side
-   - 3 sources: 2×2 grid (one empty cell)
+2. Double-click a channel/camera to activate it (or right-click â†’ Start)
+3. The center grid adjusts automatically to all active sources (dynamic rows×columns layout).
 4. Motion indicators appear in each cell header
 5. Events are listed in the right **Motion Events** panel
 
 ### 6. Offline Mode (Local Video File)
 
-1. Click **Offline Mode** → select an MP4/AVI/MKV file
+1. Click **Offline Mode** â†’ select an MP4/AVI/MKV file
 2. The file appears in Devices and auto-starts
 3. Use Play/Pause/Seek controls at the bottom of the video cell
 4. All detection features (polygons, alerts) work the same as live RTSP
-5. Offline sources count toward the 3-source limit
+5. Offline sources are handled like live sources and are part of the same dynamic grid
 
 ### 7. Edit Polygon Exclusion Zones
 
-1. Right-click a source in the device tree → **Edit Zones**
+1. Right-click a source in the device tree â†’ **Edit Zones**
    (or click **Edit Zones** button in the video cell)
 2. The editor opens with the current frame as background
 3. **Left-click** to add vertices; **right-click** to close the polygon
 4. **Ctrl+Z** undoes the last vertex; **Delete** removes selected zone
-5. Click **Save Zones** — detection in those regions is immediately suppressed
-6. Zones are stored normalized (0–1) and survive resolution changes
+5. Click **Save Zones** â€” detection in those regions is immediately suppressed
+6. Zones are stored normalized (0â€“1) and survive resolution changes
 
 ### 8. Settings
 
@@ -118,6 +115,11 @@ Click **Settings** in the toolbar to adjust:
 | Alerts & Snapshots | Sound alarm volume, snapshot saving, retention policy |
 | Performance | Detection FPS, preview FPS, stream preference |
 | Application | Auto-start, minimize to tray, log level |
+
+### Performance Guidance
+
+- The grid is dynamic, but throughput depends on CPU/GPU capacity.
+- On 4 logical CPU threads, start with about 3-4 active streams and tune detection FPS for stability.
 
 ### 9. Diagnostics
 
@@ -145,7 +147,7 @@ pyinstaller motionguard.spec --clean
 
 Output: `dist\MotionGuard\MotionGuard.exe`
 
-Run the exe directly — no Python installation needed on the target machine.
+Run the exe directly â€” no Python installation needed on the target machine.
 
 ### Optional: Inno Setup Installer
 
@@ -178,41 +180,41 @@ Filename: "{app}\MotionGuard.exe"; Description: "Launch MotionGuard"; Flags: now
 
 ```
 MotionGuard/
-├── app/
-│   ├── main.py                  Entry point
-│   ├── core/
-│   │   ├── motion_engine.py     Wraps ti_motion_detect_v4 (zero rewrites to v4)
-│   │   ├── mask_engine.py       Normalized zone coordinates → pixel mask
-│   │   ├── source_worker.py     QThread: per-source capture + detection loop
-│   │   ├── source_manager.py    Manages up to 3 active workers
-│   │   └── alerts.py            Sound alarm + snapshot saving + event logging
-│   ├── ui/
-│   │   ├── main_window.py       QMainWindow shell
-│   │   ├── source_grid_widget.py  Adaptive 1/2/3-cell grid
-│   │   ├── source_view_widget.py  Single source cell with controls
-│   │   ├── polygon_editor.py    Polygon exclusion zone editor dialog
-│   │   ├── offline_player_controls.py  Playback controls for local files
-│   │   └── dialogs/
-│   │       ├── add_recorder_dialog.py
-│   │       ├── add_camera_dialog.py
-│   │       ├── settings_dialog.py
-│   │       └── diagnostics_dialog.py
-│   ├── storage/
-│   │   ├── db.py                SQLite thread-local connections, WAL mode
-│   │   ├── migrations.py        Schema versioning
-│   │   └── repositories.py      CRUD functions for all tables
-│   └── utils/
-│       ├── paths.py             %APPDATA%\MotionGuard\* path resolution
-│       ├── logging_setup.py     Rotating file + console logging
-│       ├── rtsp_templates.py    Dahua/Hikvision/Custom URL builders
-│       ├── rtsp_test.py         Quick RTSP connectivity tester
-│       └── net_discovery.py     ONVIF WS-Discovery + profile resolution
-├── assets/
-│   ├── icons/logo.png           Application logo
-│   └── sounds/alarm.wav         Default alarm (auto-generated if missing)
-├── make_ico.py                  PNG → ICO converter (run before build)
-├── motionguard.spec             PyInstaller build spec
-└── requirements.txt
+â”œâ”€â”€ app/
+â”‚   â”œâ”€â”€ main.py                  Entry point
+â”‚   â”œâ”€â”€ core/
+â”‚   â”‚   â”œâ”€â”€ motion_engine.py     Wraps ti_motion_detect_v4 (zero rewrites to v4)
+â”‚   â”‚   â”œâ”€â”€ mask_engine.py       Normalized zone coordinates â†’ pixel mask
+â”‚   â”‚   â”œâ”€â”€ source_worker.py     QThread: per-source capture + detection loop
+â”‚   â”‚   â”œâ”€â”€ source_manager.py    Manages dynamic active workers
+â”‚   â”‚   â””â”€â”€ alerts.py            Sound alarm + snapshot saving + event logging
+â”‚   â”œâ”€â”€ ui/
+â”‚   â”‚   â”œâ”€â”€ main_window.py       QMainWindow shell
+â”‚   â”‚   â”œâ”€â”€ source_grid_widget.py  Dynamic rows×columns source grid
+â”‚   â”‚   â”œâ”€â”€ source_view_widget.py  Single source cell with controls
+â”‚   â”‚   â”œâ”€â”€ polygon_editor.py    Polygon exclusion zone editor dialog
+â”‚   â”‚   â”œâ”€â”€ offline_player_controls.py  Playback controls for local files
+â”‚   â”‚   â””â”€â”€ dialogs/
+â”‚   â”‚       â”œâ”€â”€ add_recorder_dialog.py
+â”‚   â”‚       â”œâ”€â”€ add_camera_dialog.py
+â”‚   â”‚       â”œâ”€â”€ settings_dialog.py
+â”‚   â”‚       â””â”€â”€ diagnostics_dialog.py
+â”‚   â”œâ”€â”€ storage/
+â”‚   â”‚   â”œâ”€â”€ db.py                SQLite thread-local connections, WAL mode
+â”‚   â”‚   â”œâ”€â”€ migrations.py        Schema versioning
+â”‚   â”‚   â””â”€â”€ repositories.py      CRUD functions for all tables
+â”‚   â””â”€â”€ utils/
+â”‚       â”œâ”€â”€ paths.py             %APPDATA%\MotionGuard\* path resolution
+â”‚       â”œâ”€â”€ logging_setup.py     Rotating file + console logging
+â”‚       â”œâ”€â”€ rtsp_templates.py    Dahua/Hikvision/Custom URL builders
+â”‚       â”œâ”€â”€ rtsp_test.py         Quick RTSP connectivity tester
+â”‚       â””â”€â”€ net_discovery.py     ONVIF WS-Discovery + profile resolution
+â”œâ”€â”€ assets/
+â”‚   â”œâ”€â”€ icons/logo.png           Application logo
+â”‚   â””â”€â”€ sounds/alarm.wav         Default alarm (auto-generated if missing)
+â”œâ”€â”€ make_ico.py                  PNG â†’ ICO converter (run before build)
+â”œâ”€â”€ motionguard.spec             PyInstaller build spec
+â””â”€â”€ requirements.txt
 ```
 
 ---
@@ -240,3 +242,4 @@ To update the algorithm:
 3. No other code changes needed
 
 Detection modes exposed: **MOG2** and **Frame Difference** (diff).
+

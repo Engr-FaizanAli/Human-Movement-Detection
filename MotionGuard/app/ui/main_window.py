@@ -1,9 +1,9 @@
-"""
-main_window.py — QMainWindow: the primary application shell.
+﻿"""
+main_window.py â€” QMainWindow: the primary application shell.
 
 Layout:
-  Left   : Device tree (recorders → channels, cameras, offline sources)
-  Center : Source grid (1–3 active sources)
+  Left   : Device tree (recorders â†’ channels, cameras, offline sources)
+  Center : Source grid (dynamic active sources)
   Right  : Motion events list + source quick controls
   Top    : Toolbar (Add Recorder, Add Camera, Offline, Scan ONVIF, Settings, Logs, Start All, Stop All)
   Bottom : Status bar
@@ -71,7 +71,6 @@ class MainWindow(QMainWindow):
         self.source_manager.source_added.connect(self._on_source_changed)
         self.source_manager.source_removed.connect(self._on_source_changed)
         self.source_manager.active_changed.connect(self._on_active_changed)
-        self.source_manager.at_capacity.connect(self._on_at_capacity)
 
         # Populate device tree
         self._refresh_device_tree()
@@ -236,7 +235,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
         self._status_lbl = QLabel("Ready")
         sb.addWidget(self._status_lbl)
-        self._active_count_lbl = QLabel("Active: 0 / 3")
+        self._active_count_lbl = QLabel("Active: 0")
         sb.addPermanentWidget(self._active_count_lbl)
 
     # ------------------------------------------------------------------
@@ -284,7 +283,7 @@ class MainWindow(QMainWindow):
         )
 
     def _quit(self) -> None:
-        log.info("Quitting — stopping all sources")
+        log.info("Quitting â€” stopping all sources")
         self.source_manager.stop_all()
         self._tray.hide()
         from PySide6.QtWidgets import QApplication
@@ -423,8 +422,6 @@ class MainWindow(QMainWindow):
     def _start_all(self) -> None:
         for src in self.source_manager.get_all_sources():
             if src["enabled"] and not src["is_active"]:
-                if self.source_manager.active_count() >= 3:
-                    break
                 self._start_source(src["source_id"])
 
     # ------------------------------------------------------------------
@@ -437,7 +434,7 @@ class MainWindow(QMainWindow):
 
     @Slot(list)
     def _on_active_changed(self, active_ids: list) -> None:
-        self._active_count_lbl.setText(f"Active: {len(active_ids)} / 3")
+        self._active_count_lbl.setText(f"Active: {len(active_ids)}")
         self._grid.relayout(active_ids, self._source_views)
 
     @Slot()
@@ -445,8 +442,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Source Limit Reached",
-            "Maximum of 3 sources can be active simultaneously.\n"
-            "Stop an active source before starting another.",
+            "Maximum active source limit reached.",
         )
 
     # ------------------------------------------------------------------
@@ -464,7 +460,7 @@ class MainWindow(QMainWindow):
         )
         # Add to event list
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        item = QListWidgetItem(f"[{ts}] MOTION — {name}")
+        item = QListWidgetItem(f"[{ts}] MOTION â€” {name}")
         item.setForeground(QColor("#8b0000"))
         self._event_list.insertItem(0, item)
         # Keep list manageable
@@ -477,7 +473,7 @@ class MainWindow(QMainWindow):
         stype = self._get_source_type(source_id)
         self.alert_manager.on_motion_ended(source_id, stype, name, duration)
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        item = QListWidgetItem(f"[{ts}] ended ({duration:.1f}s) — {name}")
+        item = QListWidgetItem(f"[{ts}] ended ({duration:.1f}s) â€” {name}")
         item.setForeground(QColor("#444444"))
         self._event_list.insertItem(0, item)
 
@@ -599,7 +595,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self._splitter.setSizes([240, 900, 260]))
 
     def _toggle_fullscreen(self) -> None:
-        """Toggle true OS fullscreen — hides toolbar, status bar, and side panels."""
+        """Toggle true OS fullscreen â€” hides toolbar, status bar, and side panels."""
         if self.isFullScreen():
             self._exit_fullscreen()
         else:
@@ -632,7 +628,7 @@ class MainWindow(QMainWindow):
             self._right_panel.show()
             QTimer.singleShot(0, lambda: self._splitter.setSizes([240, 900, 260]))
         else:
-            # Expand mode still active — keep panels hidden, center fills all
+            # Expand mode still active â€” keep panels hidden, center fills all
             QTimer.singleShot(0, lambda: self._splitter.setSizes([0, 99999, 0]))
         self._fullscreen_btn.setChecked(False)
         self._fullscreen_btn.setText("Full Screen")
@@ -668,7 +664,7 @@ class MainWindow(QMainWindow):
             bg_image = view.get_current_frame()
 
         if bg_image is None:
-            # No live frame — create a gray placeholder
+            # No live frame â€” create a gray placeholder
             bg_image = QImage(640, 480, QImage.Format.Format_RGB888)
             bg_image.fill(QColor(80, 80, 80))
 
@@ -741,3 +737,4 @@ class MainWindow(QMainWindow):
             if src["source_id"] == source_id:
                 return src.get("source_type", "camera")
         return "camera"
+
